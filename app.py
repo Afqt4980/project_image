@@ -12,10 +12,9 @@ class InventoryAIApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ระบบ AI ตรวจจับและนับสินค้าอัจฉริยะ")
-        self.root.geometry("1000x650") 
+        self.root.geometry("1200x700") # ขยายหน้าต่างให้กว้างขึ้นเพื่อรองรับระบบตะกร้า
         self.root.configure(bg="#f0f0f0")
 
-        # 1. ตั้งค่า AI และข้อมูลเริ่มต้น
         print("กำลังเตรียมความพร้อม AI YOLO-World...")
         self.model = YOLO('yolov8s-world.pt')
         self.cap = cv2.VideoCapture(0)
@@ -23,13 +22,13 @@ class InventoryAIApp:
         self.db_filename = "products_db.json"
         self.product_dict = self.load_database()
         
-        # ส่งเฉพาะ List ของคำภาษาอังกฤษไปให้ AI ค้นหา
         if self.product_dict:
             self.model.set_classes(list(self.product_dict.keys()))
         else:
-            self.model.set_classes(["object"]) # ค่าเริ่มต้นกัน AI error
+            self.model.set_classes(["object"]) 
         
-        self.current_counts = {}       
+        self.current_counts = {}       # ตัวเลขเรียลไทม์จากกล้อง
+        self.current_tally = {}        # [อัปเดต] ตัวเลขใน "ตะกร้า" ที่ให้ผู้ใช้ปรับแก้ได้
         self.saved_sets = []           
         self.latest_annotated_frame = None 
         self.latest_raw_frame = None   
@@ -43,7 +42,6 @@ class InventoryAIApp:
             with open(self.db_filename, 'r', encoding='utf-8') as file:
                 return json.load(file)
         else:
-            # เริ่มต้นให้เป็น Dictionary ว่างๆ เพื่อให้ผู้ใช้เพิ่มเอง
             default_data = {} 
             with open(self.db_filename, 'w', encoding='utf-8') as file:
                 json.dump(default_data, file, ensure_ascii=False, indent=4)
@@ -56,38 +54,128 @@ class InventoryAIApp:
     # ---------------------------------------------
 
     def setup_ui(self):
-        # --- Frame ด้านซ้าย (Sidebar Menu) ---
+        # --- Frame ด้านซ้ายสุด (Sidebar Menu) ---
         self.sidebar = tk.Frame(self.root, bg="#2c3e50", width=200)
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
         
         tk.Label(self.sidebar, text="เมนูจัดการ", fg="white", bg="#2c3e50", font=("Arial", 16, "bold")).pack(pady=20)
 
         btn_style = {"font": ("Arial", 12), "bg": "#34495e", "fg": "white", "width": 18, "pady": 10, "bd": 0}
-        
         tk.Button(self.sidebar, text="📦 สินค้าทั้งหมด", command=self.show_all_products_window, **btn_style).pack(pady=5)
         tk.Button(self.sidebar, text="➕ เพิ่มสินค้าใหม่", command=self.add_new_product_popup, **btn_style).pack(pady=5)
-        # นำปุ่มเซฟภาพบรรยากาศออกตามความต้องการ
-        
-        tk.Button(self.sidebar, text="📊 บันทึกยอดลง Excel", command=self.export_to_excel, bg="#27ae60", fg="white", font=("Arial", 12), width=18, pady=10, bd=0).pack(pady=30)
+        tk.Button(self.sidebar, text="📊 ส่งออกรายงาน Excel", command=self.export_to_excel, bg="#27ae60", fg="white", font=("Arial", 12), width=18, pady=10, bd=0).pack(pady=30)
 
-        # --- Frame ด้านขวา (หน้าหลัก - Main View) ---
+        # --- Frame หน้าหลัก (Main View) แบ่งซ้าย-ขวา ---
         self.main_view = tk.Frame(self.root, bg="#ffffff")
         self.main_view.pack(side=tk.RIGHT, expand=True, fill=tk.BOTH)
         
-        tk.Label(self.main_view, text="หน้านับสินค้า (ตรวจจับหลายชนิดพร้อมกัน)", font=("Arial", 18, "bold"), bg="#ffffff").pack(pady=10)
+        tk.Label(self.main_view, text="หน้านับสินค้าอัจฉริยะ (AI Scanner)", font=("Arial", 18, "bold"), bg="#ffffff").pack(pady=10)
 
-        self.canvas = tk.Canvas(self.main_view, width=640, height=480, bg="black")
+        content_frame = tk.Frame(self.main_view, bg="#ffffff")
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # 1. โซนกล้อง (ซ้าย)
+        camera_frame = tk.Frame(content_frame, bg="#ffffff")
+        camera_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(camera_frame, width=640, height=480, bg="black")
         self.canvas.pack()
 
-        self.result_label = tk.Label(self.main_view, text="กำลังวิเคราะห์...", font=("Arial", 14), bg="#ffffff", fg="blue")
+        self.result_label = tk.Label(camera_frame, text="กำลังวิเคราะห์...", font=("Arial", 14), bg="#ffffff", fg="blue")
         self.result_label.pack(pady=10)
 
-        tk.Button(self.main_view, text="💾 บันทึกยอดนับ 'ชุดนี้' เข้าระบบ", command=self.save_current_set, font=("Arial", 14, "bold"), bg="#f39c12", fg="white", padx=20, pady=5).pack()
+        # [ปุ่มใหม่] ดึงของลงตะกร้า
+        tk.Button(camera_frame, text="📥 1. ดึงจำนวนจากกล้องลงตะกร้า", command=self.add_camera_to_tally, font=("Arial", 14, "bold"), bg="#3498db", fg="white", padx=20, pady=10).pack(pady=5)
 
-    # --- ฟังก์ชันการทำงานของเมนูต่างๆ ---
+        # 2. โซนตะกร้า (ขวา)
+        cart_frame = tk.Frame(content_frame, bg="#ecf0f1", bd=2, relief="groove")
+        cart_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
+
+        tk.Label(cart_frame, text="🛒 ตะกร้าสินค้า (แก้ไขได้)", font=("Arial", 16, "bold"), bg="#ecf0f1").pack(pady=10)
+
+        self.tally_list_frame = tk.Frame(cart_frame, bg="#ecf0f1")
+        self.tally_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.refresh_tally_ui() # โหลด UI ตะกร้าครั้งแรก
+
+        # [ปุ่มบันทึกชุด]
+        tk.Button(cart_frame, text="💾 2. บันทึกตะกร้าเข้าระบบ", command=self.save_current_set, font=("Arial", 14, "bold"), bg="#f39c12", fg="white", padx=20, pady=10).pack(side=tk.BOTTOM, pady=20)
+
+    # --- ระบบตะกร้าสินค้า (Tally System) ---
+    def add_camera_to_tally(self):
+        added = False
+        for ai_prompt, count in self.current_counts.items():
+            if count > 0:
+                self.current_tally[ai_prompt] = self.current_tally.get(ai_prompt, 0) + count
+                added = True
+        
+        if added:
+            self.refresh_tally_ui()
+        else:
+            messagebox.showinfo("แจ้งเตือน", "ไม่พบสินค้าในกล้องขณะนี้")
+
+    def update_tally(self, ai_prompt, delta):
+        if ai_prompt in self.current_tally:
+            self.current_tally[ai_prompt] += delta
+            if self.current_tally[ai_prompt] <= 0:
+                del self.current_tally[ai_prompt] # ลบออกถ้าเหลือน้อยกว่า 1
+            self.refresh_tally_ui()
+
+    def remove_from_tally(self, ai_prompt):
+        if ai_prompt in self.current_tally:
+            del self.current_tally[ai_prompt]
+            self.refresh_tally_ui()
+
+    def refresh_tally_ui(self):
+        """รีเฟรชหน้าต่างตะกร้าเพื่อสร้างปุ่ม บวกลบ และลบ"""
+        # ล้างของเก่าทิ้งก่อนวาดใหม่
+        for widget in self.tally_list_frame.winfo_children():
+            widget.destroy()
+
+        if not self.current_tally:
+            tk.Label(self.tally_list_frame, text="ยังไม่มีสินค้าในตะกร้า", bg="#ecf0f1", fg="gray", font=("Arial", 12)).pack(pady=20)
+            return
+
+        for ai_prompt, count in self.current_tally.items():
+            row = tk.Frame(self.tally_list_frame, bg="white", bd=1, relief="solid")
+            row.pack(fill=tk.X, padx=10, pady=5)
+
+            display_name = self.product_dict.get(ai_prompt, ai_prompt)
+            
+            # ชื่อสินค้า
+            tk.Label(row, text=display_name, font=("Arial", 12, "bold"), bg="white", width=15, anchor="w").pack(side=tk.LEFT, padx=10, pady=10)
+            
+            # ปุ่มลบ 1
+            tk.Button(row, text=" - ", command=lambda p=ai_prompt: self.update_tally(p, -1), font=("Arial", 12, "bold"), bg="#e74c3c", fg="white", width=3).pack(side=tk.LEFT, padx=5)
+            # ตัวเลขนับ
+            tk.Label(row, text=str(count), font=("Arial", 14, "bold"), bg="white", width=4).pack(side=tk.LEFT)
+            # ปุ่มบวก 1
+            tk.Button(row, text=" + ", command=lambda p=ai_prompt: self.update_tally(p, 1), font=("Arial", 12, "bold"), bg="#2ecc71", fg="white", width=3).pack(side=tk.LEFT, padx=5)
+            # ปุ่มทิ้ง (ลบทั้งหมด)
+            tk.Button(row, text=" 🗑️ ทิ้ง ", command=lambda p=ai_prompt: self.remove_from_tally(p), font=("Arial", 10), bg="#95a5a6", fg="white").pack(side=tk.RIGHT, padx=10)
+
+    def save_current_set(self):
+        if not self.current_tally:
+            messagebox.showwarning("แจ้งเตือน", "ไม่มีสินค้าในตะกร้า กรุณาดึงข้อมูลจากกล้องก่อน")
+            return
+            
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        set_data = {"เวลา (Time)": timestamp}
+        
+        for ai_prompt, count in self.current_tally.items():
+            display_name = self.product_dict.get(ai_prompt, ai_prompt)
+            set_data[display_name] = count
+            
+        self.saved_sets.append(set_data)
+        messagebox.showinfo("บันทึกสำเร็จ", f"บันทึกข้อมูลชุดที่ {len(self.saved_sets)} เรียบร้อยแล้ว!")
+        
+        # ล้างตะกร้าหลังบันทึกเสร็จ
+        self.current_tally.clear()
+        self.refresh_tally_ui()
+
+    # --- ฟังก์ชันการทำงานอื่นๆ (เหมือนเดิม) ---
 
     def show_all_products_window(self):
-        """หน้าต่างแสดงสินค้าทั้งหมดแบบมีรูปภาพและเลื่อนได้"""
         if not self.product_dict:
             messagebox.showinfo("แจ้งเตือน", "ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าใหม่")
             return
@@ -100,48 +188,36 @@ class InventoryAIApp:
 
         tk.Label(window, text="รายการสินค้าในระบบ", font=("Arial", 16, "bold"), bg="#f9f9f9").pack(pady=10)
 
-        # สร้าง Canvas และ Scrollbar เพื่อให้เลื่อนดูได้
         canvas = tk.Canvas(window, bg="#f9f9f9", highlightthickness=0)
         scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg="#f9f9f9")
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
-
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # เก็บภาพไว้กัน Garbage Collector ลบ
         self.product_images = []
 
-        # วนลูปแสดงสินค้าแต่ละรายการ
         for ai_prompt, prod_name in self.product_dict.items():
             item_frame = tk.Frame(scrollable_frame, bg="white", bd=1, relief="solid")
             item_frame.pack(fill="x", padx=10, pady=5)
 
-            # พยายามโหลดภาพ
             img_path = os.path.join("product_samples", f"{ai_prompt.replace(' ', '_')}.jpg")
             if os.path.exists(img_path):
                 img = Image.open(img_path)
                 img = img.resize((100, 100), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
-                self.product_images.append(photo) # เก็บ reference ไว้
+                self.product_images.append(photo) 
                 
                 img_label = tk.Label(item_frame, image=photo, bg="white")
                 img_label.pack(side="left", padx=10, pady=10)
             else:
-                # ถ้าไม่มีภาพ แสดงกล่องข้อความแทน
                 no_img_label = tk.Label(item_frame, text="ไม่มีภาพ", width=12, height=6, bg="#e0e0e0")
                 no_img_label.pack(side="left", padx=10, pady=10)
 
-            # แสดงรายละเอียด
             details_frame = tk.Frame(item_frame, bg="white")
             details_frame.pack(side="left", fill="both", expand=True, padx=10)
             
@@ -179,7 +255,6 @@ class InventoryAIApp:
                 messagebox.showwarning("แจ้งเตือน", "ลักษณะเด่น (AI Prompt) นี้มีในระบบแล้ว", parent=popup)
                 return
                 
-            # --- ส่วนบันทึกภาพตัวอย่าง (อัปเดตแก้บั๊กแล้ว) ---
             if self.latest_raw_frame is not None and self.latest_raw_frame.size > 0:
                 try:
                     save_dir = "product_samples"
@@ -189,13 +264,11 @@ class InventoryAIApp:
                     safe_filename = f"{ai_prompt.replace(' ', '_')}.jpg"
                     filepath = os.path.join(save_dir, safe_filename)
                     
-                    # ลดขนาดภาพลงครึ่งนึงเพื่อไม่ให้ไฟล์ใหญ่เกินไป
                     resized_img = cv2.resize(self.latest_raw_frame, (320, 240))
                     cv2.imwrite(filepath, resized_img)
                 except Exception as e:
                     print(f"เกิดข้อผิดพลาดในการเซฟรูป: {e}")
             
-            # อัปเดตข้อมูล
             self.product_dict[ai_prompt] = prod_name
             self.save_to_database()
             self.model.set_classes(list(self.product_dict.keys())) 
@@ -204,26 +277,6 @@ class InventoryAIApp:
             popup.destroy() 
             
         tk.Button(popup, text="📸 บันทึกข้อมูลพร้อมเซฟภาพตัวอย่าง", command=save_product, font=("Arial", 12, "bold"), bg="#2980b9", fg="white", pady=10).pack(pady=20)
-
-    def save_current_set(self):
-        # เช็กว่ามีสินค้าถูกนับไหม และในระบบมีสินค้าหรือยัง
-        if not self.product_dict:
-             messagebox.showwarning("แจ้งเตือน", "ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าก่อน")
-             return
-             
-        if sum(self.current_counts.values()) == 0:
-            if not messagebox.askyesno("ยืนยัน", "ไม่พบสินค้าในกล้องเลย คุณต้องการบันทึกข้อมูลเป็น 0 ใช่หรือไม่?"):
-                return
-            
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        set_data = {"เวลา (Time)": timestamp}
-        
-        for ai_prompt, count in self.current_counts.items():
-            display_name = self.product_dict.get(ai_prompt, ai_prompt)
-            set_data[display_name] = count
-            
-        self.saved_sets.append(set_data)
-        messagebox.showinfo("บันทึกสำเร็จ", f"บันทึกข้อมูลชุดที่ {len(self.saved_sets)} เรียบร้อยแล้ว!")
 
     def export_to_excel(self):
         if not self.saved_sets:
@@ -252,7 +305,6 @@ class InventoryAIApp:
             frame = cv2.resize(frame, (640, 480))
             self.latest_raw_frame = frame.copy() 
             
-            # ถ้าไม่มีสินค้าในระบบ ให้ข้ามการ predict ไปก่อน
             if self.product_dict:
                 results = self.model.predict(frame, conf=0.25, verbose=False)
                 
@@ -274,7 +326,7 @@ class InventoryAIApp:
                 result_text = " | ".join(result_texts)
                 if not result_text:
                     result_text = "ไม่พบสินค้าในรายการ"
-                self.result_label.config(text=f"ตรวจพบ: {result_text}")
+                self.result_label.config(text=f"ตรวจพบตอนนี้: {result_text}")
 
                 annotated_frame = results[0].plot()
             else:
@@ -297,8 +349,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = InventoryAIApp(root)
     root.mainloop()
-
-# หมายเหตุ:
-# - โค้ดนี้เป็นระบบตรวจจับและนับสินค้าด้วย AI YOLO-World ที่มีการจัดการฐานข้อมูลแบบ JSON และฟีเจอร์การบันทึกยอดนับลง Excel (CSV) ได้อย่างครบถ้วน
-# - ผู้ใช้สามารถเพิ่มสินค้าใหม่ได้ด้วยการกรอกชื่อและลักษณะเด่นที่ AI จะรู้จัก พร้อมกับบันทึกภาพตัวอย่างอัตโนมัติ
-# - มีการจัดการข้อผิดพลาดและการแจ้งเตือนผู้ใช้ในกรณีต่างๆ เพื่อให้ใช้งานได้ง่ายและไม่เกิดปัญหาในการใช้งานจริง
