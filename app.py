@@ -5,7 +5,7 @@ from PIL import Image, ImageTk
 from ultralytics import YOLO
 import csv
 import os
-import json # [อัปเดต] นำเข้าไลบรารี json สำหรับทำฐานข้อมูล
+import json 
 from datetime import datetime
 
 class InventoryAIApp:
@@ -20,14 +20,14 @@ class InventoryAIApp:
         self.model = YOLO('yolov8s-world.pt')
         self.cap = cv2.VideoCapture(0)
         
-        # [อัปเดต] กำหนดชื่อไฟล์ฐานข้อมูล
         self.db_filename = "products_db.json"
-        
-        # [อัปเดต] โหลดข้อมูลสินค้าจากฐานข้อมูล (ถ้าไม่มีจะสร้างใหม่)
         self.product_dict = self.load_database()
         
         # ส่งเฉพาะ List ของคำภาษาอังกฤษไปให้ AI ค้นหา
-        self.model.set_classes(list(self.product_dict.keys()))
+        if self.product_dict:
+            self.model.set_classes(list(self.product_dict.keys()))
+        else:
+            self.model.set_classes(["object"]) # ค่าเริ่มต้นกัน AI error
         
         self.current_counts = {}       
         self.saved_sets = []           
@@ -39,23 +39,17 @@ class InventoryAIApp:
 
     # --- ฟังก์ชันจัดการฐานข้อมูล (JSON Database) ---
     def load_database(self):
-        """โหลดข้อมูลจากไฟล์ JSON ถ้าไฟล์ไม่มีให้สร้างใหม่พร้อมข้อมูลเริ่มต้น"""
         if os.path.exists(self.db_filename):
             with open(self.db_filename, 'r', encoding='utf-8') as file:
                 return json.load(file)
         else:
-            # ข้อมูลเริ่มต้นเมื่อเปิดโปรแกรมครั้งแรกสุด
-            default_data = {
-                "yellow bottle": "ขวดน้ำสีเหลือง", 
-                "cup": "แก้วน้ำ"
-            }
-            # สร้างไฟล์ฐานข้อมูล
+            # เริ่มต้นให้เป็น Dictionary ว่างๆ เพื่อให้ผู้ใช้เพิ่มเอง
+            default_data = {} 
             with open(self.db_filename, 'w', encoding='utf-8') as file:
                 json.dump(default_data, file, ensure_ascii=False, indent=4)
             return default_data
 
     def save_to_database(self):
-        """บันทึกข้อมูล Dictionary ปัจจุบันลงไฟล์ JSON"""
         with open(self.db_filename, 'w', encoding='utf-8') as file:
             json.dump(self.product_dict, file, ensure_ascii=False, indent=4)
 
@@ -70,9 +64,10 @@ class InventoryAIApp:
 
         btn_style = {"font": ("Arial", 12), "bg": "#34495e", "fg": "white", "width": 18, "pady": 10, "bd": 0}
         
-        tk.Button(self.sidebar, text="📦 สินค้าทั้งหมด", command=self.show_all_products, **btn_style).pack(pady=5)
+        tk.Button(self.sidebar, text="📦 สินค้าทั้งหมด", command=self.show_all_products_window, **btn_style).pack(pady=5)
         tk.Button(self.sidebar, text="➕ เพิ่มสินค้าใหม่", command=self.add_new_product_popup, **btn_style).pack(pady=5)
-        tk.Button(self.sidebar, text="📸 เซฟภาพบรรยากาศ", command=self.save_image, **btn_style).pack(pady=5)
+        # นำปุ่มเซฟภาพบรรยากาศออกตามความต้องการ
+        
         tk.Button(self.sidebar, text="📊 บันทึกยอดลง Excel", command=self.export_to_excel, bg="#27ae60", fg="white", font=("Arial", 12), width=18, pady=10, bd=0).pack(pady=30)
 
         # --- Frame ด้านขวา (หน้าหลัก - Main View) ---
@@ -91,9 +86,67 @@ class InventoryAIApp:
 
     # --- ฟังก์ชันการทำงานของเมนูต่างๆ ---
 
-    def show_all_products(self):
-        items = "\n".join([f"- {name} (AI: {prompt})" for prompt, name in self.product_dict.items()])
-        messagebox.showinfo("รายการสินค้าทั้งหมด", f"ระบบมีข้อมูลสินค้าในฐานข้อมูลดังนี้:\n\n{items}")
+    def show_all_products_window(self):
+        """หน้าต่างแสดงสินค้าทั้งหมดแบบมีรูปภาพและเลื่อนได้"""
+        if not self.product_dict:
+            messagebox.showinfo("แจ้งเตือน", "ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าใหม่")
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("รายการสินค้าทั้งหมด")
+        window.geometry("500x600")
+        window.configure(bg="#f9f9f9")
+        window.grab_set()
+
+        tk.Label(window, text="รายการสินค้าในระบบ", font=("Arial", 16, "bold"), bg="#f9f9f9").pack(pady=10)
+
+        # สร้าง Canvas และ Scrollbar เพื่อให้เลื่อนดูได้
+        canvas = tk.Canvas(window, bg="#f9f9f9", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg="#f9f9f9")
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # เก็บภาพไว้กัน Garbage Collector ลบ
+        self.product_images = []
+
+        # วนลูปแสดงสินค้าแต่ละรายการ
+        for ai_prompt, prod_name in self.product_dict.items():
+            item_frame = tk.Frame(scrollable_frame, bg="white", bd=1, relief="solid")
+            item_frame.pack(fill="x", padx=10, pady=5)
+
+            # พยายามโหลดภาพ
+            img_path = os.path.join("product_samples", f"{ai_prompt.replace(' ', '_')}.jpg")
+            if os.path.exists(img_path):
+                img = Image.open(img_path)
+                img = img.resize((100, 100), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self.product_images.append(photo) # เก็บ reference ไว้
+                
+                img_label = tk.Label(item_frame, image=photo, bg="white")
+                img_label.pack(side="left", padx=10, pady=10)
+            else:
+                # ถ้าไม่มีภาพ แสดงกล่องข้อความแทน
+                no_img_label = tk.Label(item_frame, text="ไม่มีภาพ", width=12, height=6, bg="#e0e0e0")
+                no_img_label.pack(side="left", padx=10, pady=10)
+
+            # แสดงรายละเอียด
+            details_frame = tk.Frame(item_frame, bg="white")
+            details_frame.pack(side="left", fill="both", expand=True, padx=10)
+            
+            tk.Label(details_frame, text=prod_name, font=("Arial", 14, "bold"), bg="white", anchor="w").pack(fill="x", pady=(10, 0))
+            tk.Label(details_frame, text=f"AI Prompt: {ai_prompt}", font=("Arial", 10), fg="gray", bg="white", anchor="w").pack(fill="x")
 
     def add_new_product_popup(self):
         popup = tk.Toplevel(self.root)
@@ -126,31 +179,38 @@ class InventoryAIApp:
                 messagebox.showwarning("แจ้งเตือน", "ลักษณะเด่น (AI Prompt) นี้มีในระบบแล้ว", parent=popup)
                 return
                 
-            if self.latest_raw_frame is not None:
-                save_dir = "product_samples"
-                os.makedirs(save_dir, exist_ok=True) 
-                filename = f"{save_dir}/{ai_prompt.replace(' ', '_')}.jpg"
-                cv2.imwrite(filename, self.latest_raw_frame)
+            # --- ส่วนบันทึกภาพตัวอย่าง (อัปเดตแก้บั๊กแล้ว) ---
+            if self.latest_raw_frame is not None and self.latest_raw_frame.size > 0:
+                try:
+                    save_dir = "product_samples"
+                    if not os.path.exists(save_dir):
+                        os.makedirs(save_dir) 
+                    
+                    safe_filename = f"{ai_prompt.replace(' ', '_')}.jpg"
+                    filepath = os.path.join(save_dir, safe_filename)
+                    
+                    # ลดขนาดภาพลงครึ่งนึงเพื่อไม่ให้ไฟล์ใหญ่เกินไป
+                    resized_img = cv2.resize(self.latest_raw_frame, (320, 240))
+                    cv2.imwrite(filepath, resized_img)
+                except Exception as e:
+                    print(f"เกิดข้อผิดพลาดในการเซฟรูป: {e}")
             
-            # 1. อัปเดตข้อมูลเข้าตัวแปร
+            # อัปเดตข้อมูล
             self.product_dict[ai_prompt] = prod_name
-            # 2. [อัปเดต] บันทึกข้อมูลใหม่ลงไฟล์ฐานข้อมูลทันที
             self.save_to_database()
-            # 3. รีโหลด AI
             self.model.set_classes(list(self.product_dict.keys())) 
             
-            messagebox.showinfo("สำเร็จ", f"เพิ่มสินค้า '{prod_name}'\nและบันทึกลงฐานข้อมูลถาวรสำเร็จ!", parent=popup)
+            messagebox.showinfo("สำเร็จ", f"เพิ่มสินค้า '{prod_name}'\nและบันทึกลงฐานข้อมูลสำเร็จ!", parent=popup)
             popup.destroy() 
             
         tk.Button(popup, text="📸 บันทึกข้อมูลพร้อมเซฟภาพตัวอย่าง", command=save_product, font=("Arial", 12, "bold"), bg="#2980b9", fg="white", pady=10).pack(pady=20)
 
-    def save_image(self):
-        if self.latest_annotated_frame is not None:
-            filename = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-            cv2.imwrite(filename, self.latest_annotated_frame)
-            messagebox.showinfo("สำเร็จ", f"บันทึกภาพหน้าจอ '{filename}' เรียบร้อยแล้ว!")
-
     def save_current_set(self):
+        # เช็กว่ามีสินค้าถูกนับไหม และในระบบมีสินค้าหรือยัง
+        if not self.product_dict:
+             messagebox.showwarning("แจ้งเตือน", "ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าก่อน")
+             return
+             
         if sum(self.current_counts.values()) == 0:
             if not messagebox.askyesno("ยืนยัน", "ไม่พบสินค้าในกล้องเลย คุณต้องการบันทึกข้อมูลเป็น 0 ใช่หรือไม่?"):
                 return
@@ -192,29 +252,35 @@ class InventoryAIApp:
             frame = cv2.resize(frame, (640, 480))
             self.latest_raw_frame = frame.copy() 
             
-            results = self.model.predict(frame, conf=0.25, verbose=False)
-            
-            self.current_counts = {prompt: 0 for prompt in self.product_dict.keys()}
-            
-            names = results[0].names 
-            for box in results[0].boxes:
-                cls_id = int(box.cls[0])
-                ai_prompt = names[cls_id]
-                if ai_prompt in self.current_counts:
-                    self.current_counts[ai_prompt] += 1
+            # ถ้าไม่มีสินค้าในระบบ ให้ข้ามการ predict ไปก่อน
+            if self.product_dict:
+                results = self.model.predict(frame, conf=0.25, verbose=False)
+                
+                self.current_counts = {prompt: 0 for prompt in self.product_dict.keys()}
+                names = results[0].names 
+                
+                for box in results[0].boxes:
+                    cls_id = int(box.cls[0])
+                    ai_prompt = names[cls_id]
+                    if ai_prompt in self.current_counts:
+                        self.current_counts[ai_prompt] += 1
 
-            result_texts = []
-            for ai_prompt, count in self.current_counts.items():
-                if count > 0:
-                    display_name = self.product_dict.get(ai_prompt, ai_prompt)
-                    result_texts.append(f"{display_name}: {count}")
-                    
-            result_text = " | ".join(result_texts)
-            if not result_text:
-                result_text = "ไม่พบสินค้าในรายการ"
-            self.result_label.config(text=f"ตรวจพบ: {result_text}")
+                result_texts = []
+                for ai_prompt, count in self.current_counts.items():
+                    if count > 0:
+                        display_name = self.product_dict.get(ai_prompt, ai_prompt)
+                        result_texts.append(f"{display_name}: {count}")
+                        
+                result_text = " | ".join(result_texts)
+                if not result_text:
+                    result_text = "ไม่พบสินค้าในรายการ"
+                self.result_label.config(text=f"ตรวจพบ: {result_text}")
 
-            annotated_frame = results[0].plot()
+                annotated_frame = results[0].plot()
+            else:
+                 self.result_label.config(text="ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้า")
+                 annotated_frame = frame
+                 
             self.latest_annotated_frame = annotated_frame 
             
             cv_img = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
@@ -232,4 +298,7 @@ if __name__ == "__main__":
     app = InventoryAIApp(root)
     root.mainloop()
 
-# หมายเหตุ: โค้ดนี้เป็นการพัฒนาต่อยอดจากโค้ดก่อนหน้า โดยเพิ่มฟีเจอร์การจัดการฐานข้อมูลแบบถาวรด้วยไฟล์ JSON และปรับปรุง UI ให้ใช้งานง่ายขึ้น รวมถึงการบันทึกข้อมูลและส่งออกเป็นไฟล์ CSV ที่สามารถเปิดด้วย Excel ได้ทันที
+# หมายเหตุ:
+# - โค้ดนี้เป็นระบบตรวจจับและนับสินค้าด้วย AI YOLO-World ที่มีการจัดการฐานข้อมูลแบบ JSON และฟีเจอร์การบันทึกยอดนับลง Excel (CSV) ได้อย่างครบถ้วน
+# - ผู้ใช้สามารถเพิ่มสินค้าใหม่ได้ด้วยการกรอกชื่อและลักษณะเด่นที่ AI จะรู้จัก พร้อมกับบันทึกภาพตัวอย่างอัตโนมัติ
+# - มีการจัดการข้อผิดพลาดและการแจ้งเตือนผู้ใช้ในกรณีต่างๆ เพื่อให้ใช้งานได้ง่ายและไม่เกิดปัญหาในการใช้งานจริง
